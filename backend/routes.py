@@ -2,6 +2,7 @@ from flask import Blueprint, jsonify, request
 from models import Employee, db
 from blockchain import contract, w3, get_connection_status
 import traceback
+from werkzeug.security import generate_password_hash, check_password_hash
 
 main = Blueprint("main", __name__)
 
@@ -16,17 +17,73 @@ def home():
     })
 
 # ─────────────────────────────────────────
-# AUTH — LOGIN
+# AUTH — SIGNUP
 # ─────────────────────────────────────────
+@main.route("/api/signup", methods=["POST"])
+def signup():
+    try:
+        data = request.get_json()
+
+        name = data.get("name", "").strip()
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+
+        if not name or not email or not password:
+            return jsonify({"error": "All fields are required"}), 400
+
+        if len(password) < 6:
+            return jsonify({"error": "Password must contain at least 6 characters"}), 400
+
+        if Employee.query.filter_by(email=email).first():
+            return jsonify({"error": "Email already registered"}), 409
+
+        employee = Employee(
+            name=name,
+            email=email,
+            role="employee",
+            status="active",
+            password_hash=generate_password_hash(password)
+        )
+
+        db.session.add(employee)
+        db.session.commit()
+
+        return jsonify({
+            "message": "Registration successful",
+            "user": employee.to_dict()
+        }), 201
+
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 @main.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json()
-    email = data.get("email")
-    role = data.get("role")
-    employee = Employee.query.filter_by(email=email, role=role).first()
-    if not employee:
+
+    email = data.get("email", "").strip().lower()
+    password = data.get("password", "")
+    role = data.get("role", "")
+
+    employee = Employee.query.filter_by(
+        email=email,
+        role=role
+    ).first()
+
+    if not employee or not employee.password_hash:
         return jsonify({"error": "Invalid credentials"}), 401
-    return jsonify({"message": "Login successful", "user": employee.to_dict()})
+
+    if not check_password_hash(employee.password_hash, password):
+        return jsonify({"error": "Invalid credentials"}), 401
+
+    if employee.status != "active":
+        return jsonify({"error": "Account is inactive"}), 403
+
+    return jsonify({
+        "message": "Login successful",
+        "user": employee.to_dict()
+    }), 200
 
 # ─────────────────────────────────────────
 # EMPLOYEES
@@ -41,20 +98,55 @@ def get_employee(emp_id):
     emp = Employee.query.get_or_404(emp_id)
     return jsonify(emp.to_dict())
 
+
 @main.route("/api/employees", methods=["POST"])
 def create_employee():
-    data = request.get_json()
-    emp = Employee(
-        name=data["name"],
-        email=data["email"],
-        role=data.get("role", "employee"),
-        department=data.get("department"),
-        wallet_address=data.get("wallet_address"),
-        status=data.get("status", "active")
-    )
-    db.session.add(emp)
-    db.session.commit()
-    return jsonify(emp.to_dict()), 201
+    try:
+        data = request.get_json() or {}
+
+        name = data.get("name", "").strip()
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        department = data.get("department")
+        wallet_address = data.get("wallet_address") or None
+        status = data.get("status", "active")
+
+        if not name or not email or not password:
+            return jsonify({"error": "Name, email and password are required"}), 400
+
+        if len(password) < 6:
+            return jsonify({"error": "Password must contain at least 6 characters"}), 400
+
+        if Employee.query.filter_by(email=email).first():
+            return jsonify({"error": "Email already registered"}), 409
+
+        if wallet_address:
+            wallet_address = w3.to_checksum_address(wallet_address)
+
+        emp = Employee(
+            name=name,
+            email=email,
+            role="employee",
+            department=department,
+            wallet_address=wallet_address,
+            status=status,
+            password_hash=generate_password_hash(password)
+        )
+
+        db.session.add(emp)
+        db.session.commit()
+
+        return jsonify(emp.to_dict()), 201
+
+    except ValueError:
+        db.session.rollback()
+        return jsonify({"error": "Invalid Ethereum wallet address"}), 400
+
+    except Exception as e:
+        db.session.rollback()
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
 
 # ─────────────────────────────────────────
 # ALL GRANTS — must be ABOVE /<wallet_address>
@@ -97,29 +189,37 @@ def get_all_grants():
 # ─────────────────────────────────────────
 # GRANTS — Create (ADMIN_ROLE required)
 # ─────────────────────────────────────────
+
 @main.route("/api/grants", methods=["POST"])
 def create_grant():
     try:
-        data = request.get_json()
-        employee_address = w3.to_checksum_address(data["employeeAddress"])
+        data = request.get_json() or {}
+
+        employee_email = data.get("employeeEmail", "").strip().lower()
+        employee_name = data.get("employeeName", "").strip()
+        employee_address = w3.to_checksum_address(
+            data["employeeAddress"]
+        )
         total_shares = int(data["totalShares"])
         cliff_period = int(data.get("cliffPeriod", 365))
         vesting_duration = int(data.get("vestingDuration", 1460))
-        employee_name = data["employeeName"]
 
-        # account[0] is the deployer — has ADMIN_ROLE by default
+        if not employee_email or not employee_name:
+            return jsonify({"error": "Employee details are required"}), 400
+
+        if total_shares <= 0:
+            return jsonify({"error": "Shares must be greater than zero"}), 400
+
+        employee = Employee.query.filter_by(
+            email=employee_email,
+            role="employee"
+        ).first()
+
+        if not employee:
+            return jsonify({"error": "Employee not found"}), 404
+
         sender = w3.eth.accounts[0]
 
-        # Grant ADMIN_ROLE to sender just in case
-        try:
-            admin_role = contract.functions.ADMIN_ROLE().call()
-            contract.functions.grantRole(
-                admin_role, sender
-            ).transact({"from": sender})
-        except:
-            pass
-
-        # Correct order: address, string name, uint256 shares, uint256 cliff, uint256 vesting
         tx_hash = contract.functions.createGrant(
             employee_address,
             employee_name,
@@ -129,14 +229,29 @@ def create_grant():
         ).transact({"from": sender, "gas": 500000})
 
         receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+
+        if receipt.status != 1:
+            return jsonify({"error": "Blockchain transaction failed"}), 500
+
+        # Save wallet address only after successful blockchain transaction
+        employee.wallet_address = employee_address
+        db.session.commit()
+
         return jsonify({
             "message": "Grant created successfully",
-            "txHash": receipt.transactionHash.hex()
+            "txHash": receipt.transactionHash.hex(),
+            "employeeAddress": employee_address
         }), 201
 
+    except ValueError:
+        db.session.rollback()
+        return jsonify({"error": "Invalid wallet address or grant values"}), 400
+
     except Exception as e:
+        db.session.rollback()
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 # ─────────────────────────────────────────
 # GRANTS — Read by wallet address

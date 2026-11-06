@@ -42,3 +42,10 @@ Thumbs.db
 
 # VS Code settings (optional)
 .vscode/
+# Additional local development files
+venv/
+.env.*
+!.env.example
+instance/
+*.sqlite
+*.sqlite3

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { registerUser } from "../api";
 import "./SignupPage.css";
 
 function SignupPage() {
@@ -11,6 +12,9 @@ function SignupPage() {
     password: "",
   });
 
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
   const handleChange = (e) => {
     setFormData({
       ...formData,
@@ -18,11 +22,26 @@ function SignupPage() {
     });
   };
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    console.log("Signup Data:", formData);
+    setError("");
 
-    navigate("/login");
+    if (formData.password.length < 6) {
+      setError("Password must contain at least 6 characters.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      await registerUser(formData);
+      alert("Registration successful! Please log in.");
+      navigate("/login");
+    } catch (err) {
+      setError(err.message || "Registration failed.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -55,10 +74,15 @@ function SignupPage() {
             placeholder="Enter Password"
             value={formData.password}
             onChange={handleChange}
+            minLength={6}
             required
           />
 
-          <button type="submit">Register</button>
+          {error && <p style={{ color: "red" }}>{error}</p>}
+
+          <button type="submit" disabled={loading}>
+            {loading ? "Registering..." : "Register"}
+          </button>
         </form>
       </div>
     </div>

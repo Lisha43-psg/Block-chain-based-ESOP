@@ -65,12 +65,13 @@ const GrantESOP = () => {
       const vestingDays = Math.round(parseFloat(formData.vestingPeriod) * 365);
 
       const result = await createGrant({
-        employeeName: formData.employeeName,
-        employeeAddress: formData.employeeAddress,
-        totalShares: parseInt(formData.shares),
-        cliffPeriod: cliffDays,
-        vestingDuration: vestingDays
-      });
+  employeeName: formData.employeeName,
+  employeeEmail: formData.employeeEmail,
+  employeeAddress: formData.employeeAddress,
+  totalShares: parseInt(formData.shares),
+  cliffPeriod: cliffDays,
+  vestingDuration: vestingDays
+});
 
       setSuccess(`✅ ESOP granted! Tx: ${result.txHash?.slice(0, 20)}...`);
 
